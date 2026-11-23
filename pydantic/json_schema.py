@@ -1551,44 +1551,59 @@ class GenerateJsonSchema:
             choice = self.resolve_ref_schema(choice)
         except RuntimeError:
             return False
-        if 'properties' in choice:
-            return isinstance(choice['properties'], dict) and prop in choice['properties']
-        if 'oneOf' in choice:
-            return all(self._choice_has_property(subchoice, prop) for subchoice in choice['oneOf'])
-        if 'anyOf' in choice:
-            return all(self._choice_has_property(subchoice, prop) for subchoice in choice['anyOf'])
+        properties = choice.get('properties')
+        if isinstance(properties, dict) and prop in properties:
+            return True
+        one_of = choice.get('oneOf')
+        if isinstance(one_of, list):
+            return all(
+                isinstance(subchoice, dict) and self._choice_has_property(subchoice, prop)
+                for subchoice in cast('list[Any]', one_of)
+            )
+        any_of = choice.get('anyOf')
+        if isinstance(any_of, list):
+            return all(
+                isinstance(subchoice, dict) and self._choice_has_property(subchoice, prop)
+                for subchoice in cast('list[Any]', any_of)
+            )
         return False
 
     def _find_field_in_choice(self, choice_schema: core_schema.CoreSchema, field_name: str) -> CoreSchemaField | None:
-        while choice_schema['type'] in (
-            'definitions',
-            'function-after',
-            'function-before',
-            'function-wrap',
-            'nullable',
-        ):
-            choice_schema = choice_schema['schema']
-        if choice_schema['type'] == 'model':
-            inner = choice_schema['schema']
+        schema_type = choice_schema['type']
+        if schema_type in ('definitions', 'nullable'):
+            inner_schema = cast('core_schema.DefinitionsSchema | core_schema.NullableSchema', choice_schema)['schema']
+            return self._find_field_in_choice(inner_schema, field_name)
+        if _core_utils.is_function_with_inner_schema(choice_schema):
+            return self._find_field_in_choice(choice_schema['schema'], field_name)
+        if schema_type == 'model':
+            model_schema = cast('core_schema.ModelSchema', choice_schema)
+            inner = model_schema['schema']
             if inner['type'] == 'model-fields':
-                return inner['fields'].get(field_name)
-        elif choice_schema['type'] == 'dataclass':
-            inner = choice_schema['schema']
+                fields = cast('core_schema.ModelFieldsSchema', inner)['fields']
+                return fields.get(field_name)
+        elif schema_type == 'dataclass':
+            dataclass_schema = cast('core_schema.DataclassSchema', choice_schema)
+            inner = dataclass_schema['schema']
             if inner['type'] == 'dataclass-args':
-                for field in inner['fields']:
+                fields = cast('core_schema.DataclassArgsSchema', inner)['fields']
+                for field in fields:
                     if field['name'] == field_name:
                         return field
-        elif choice_schema['type'] == 'typed-dict':
-            return choice_schema['fields'].get(field_name)
-        elif choice_schema['type'] == 'tagged-union':
-            for subchoice in choice_schema['choices'].values():
+        elif schema_type == 'typed-dict':
+            typed_dict_schema = cast('core_schema.TypedDictSchema', choice_schema)
+            return typed_dict_schema['fields'].get(field_name)
+        elif schema_type == 'tagged-union':
+            tagged_union = cast('core_schema.TaggedUnionSchema', choice_schema)
+            for subchoice in tagged_union['choices'].values():
                 field = self._find_field_in_choice(subchoice, field_name)
                 if field is not None:
                     return field
-        elif choice_schema['type'] == 'lax-or-strict':
-            return self._find_field_in_choice(choice_schema['lax_schema'], field_name)
-        elif choice_schema['type'] == 'chain':
-            for step in choice_schema['steps']:
+        elif schema_type == 'lax-or-strict':
+            lax_or_strict = cast('core_schema.LaxOrStrictSchema', choice_schema)
+            return self._find_field_in_choice(lax_or_strict['lax_schema'], field_name)
+        elif schema_type == 'chain':
+            chain_schema = cast('core_schema.ChainSchema', choice_schema)
+            for step in chain_schema['steps']:
                 field = self._find_field_in_choice(step, field_name)
                 if field is not None:
                     return field
